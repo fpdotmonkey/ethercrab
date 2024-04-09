@@ -7,7 +7,6 @@ use std::io::Write;
 use embedded_io_async::Read;
 use env_logger::Env;
 use ethercrab::{
-    error::Error,
     internals::{ChunkReader, DeviceEeprom},
     std::{ethercat_now, tx_rx_task},
     Client, ClientConfig, PduStorage, Timeouts,
@@ -25,24 +24,33 @@ const PDI_LEN: usize = 64;
 static PDU_STORAGE: PduStorage<MAX_FRAMES, MAX_PDU_DATA> = PduStorage::new();
 
 #[tokio::main]
-async fn main() -> Result<(), Error> {
+async fn main() -> Result<(), std::io::Error> {
     env_logger::Builder::from_env(Env::default().default_filter_or("info")).init();
 
-    let interface = std::env::args()
-        .nth(1)
-        .expect("Provide network interface as first argument.");
+    let exe_name: String = match std::env::current_exe()
+        .as_deref()
+        .map(std::path::Path::file_name)
+    {
+        Ok(Some(name)) => name.to_string_lossy().into_owned(),
+        _ => "dump-eeprom".into(),
+    };
+    let usage = format!("Usage: {exe_name} NETWORK_INTERFACE SLAVE_INDEX");
 
-    let index: u16 = std::env::args()
-        .nth(2)
-        .expect("Provide device index (starting from zero) as second argument.")
-        .parse()
-        .expect("Invalid index: must be a number");
+    let interface = match std::env::args().nth(1) {
+        Some(interface) => interface,
+        None => {
+            eprintln!("{usage}");
+            return Ok(());
+        }
+    };
 
-    log::info!(
-        "Starting EEPROM dump tool, interface {}, device index {}",
-        interface,
-        index
-    );
+    let index: u16 = match std::env::args().nth(2).as_deref().map(str::parse) {
+        Some(Ok(index)) => index,
+        _ => {
+            eprintln!("{usage}");
+            return Ok(());
+        }
+    };
 
     let (tx, rx, pdu_loop) = PDU_STORAGE.try_split().expect("can only split once");
 
@@ -55,22 +63,21 @@ async fn main() -> Result<(), Error> {
         },
     );
 
-    tokio::spawn(tx_rx_task(&interface, tx, rx).expect("spawn TX/RX task"));
+    tokio::spawn(tx_rx_task(&interface, tx, rx)?);
 
-    let mut group = client
+    let group = client
         .init_single_group::<MAX_SLAVES, PDI_LEN>(ethercat_now)
         .await
-        .expect("Init");
+        .map_err(|err| std::io::Error::new(std::io::ErrorKind::Other, err))?;
 
-    log::info!("Discovered {} slaves", group.len());
-
-    for slave in group.iter(&client) {
-        log::info!(
-            "--> Slave {:#06x} {} {}",
-            slave.configured_address(),
-            slave.name(),
-            slave.identity()
-        );
+    if group.len() <= index.into() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!(
+                "index was {index}, but there are only {} slaves",
+                group.len()
+            ),
+        ));
     }
 
     let slave = group
@@ -78,7 +85,7 @@ async fn main() -> Result<(), Error> {
         .expect("Could not find device for given index");
 
     log::info!(
-        "Dumping EEPROM for device index {}: {:#06x} {} {}...",
+        "Dumping EEPROM for device index {}: {:#06x} {} {}",
         index,
         slave.configured_address(),
         slave.name(),
@@ -98,8 +105,6 @@ async fn main() -> Result<(), Error> {
     // Kilobits to bits to bytes, and undoing the offset
     let len = ((u16::from_le_bytes(len_buf) + 1) * 1024) / 8;
 
-    log::info!("--> Device EEPROM is {} bytes long", len);
-
     let mut provider = ChunkReader::new(DeviceEeprom::new(&client, base_address + index), 0, len);
 
     let mut buf = vec![0u8; usize::from(len)];
@@ -107,8 +112,6 @@ async fn main() -> Result<(), Error> {
     provider.read_exact(&mut buf).await.expect("Read");
 
     std::io::stdout().write_all(&buf[..]).expect("Stdout write");
-
-    log::info!("Done, wrote {} bytes to stdout", buf.len());
 
     Ok(())
 }
