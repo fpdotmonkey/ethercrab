@@ -20,14 +20,7 @@ use ethercrab::{
     std::{ethercat_now, tx_rx_task},
     MainDevice, MainDeviceConfig, PduStorage, Timeouts,
 };
-use std::{
-    sync::{
-        atomic::{AtomicBool, Ordering},
-        Arc,
-    },
-    time::Duration,
-};
-use tokio::time::MissedTickBehavior;
+use std::{sync::Arc, time::Duration};
 
 /// Maximum number of SubDevices that can be stored. This must be a power of 2 greater than 1.
 const MAX_SUBDEVICES: usize = 16;
@@ -44,15 +37,10 @@ static PDU_STORAGE: PduStorage<MAX_FRAMES, MAX_PDU_DATA> = PduStorage::new();
 async fn main() -> Result<(), Error> {
     env_logger::Builder::from_env(Env::default().default_filter_or("info")).init();
 
-    let interface = std::env::args()
-        .nth(1)
-        .expect("Provide network interface as first argument.");
-
-    log::info!("Starting EK1100/EK1501 demo...");
-    log::info!(
-        "Ensure an EK1100 or EK1501 is the first SubDevice, with any number of modules connected after"
-    );
-    log::info!("Run with RUST_LOG=ethercrab=debug or =trace for debug information");
+    let Some(interface) = std::env::args().nth(1) else {
+        println!("Provide network interface as first argument.");
+        std::process::exit(1);
+    };
 
     let (tx, rx, pdu_loop) = PDU_STORAGE.try_split().expect("can only split once");
 
@@ -66,42 +54,29 @@ async fn main() -> Result<(), Error> {
         MainDeviceConfig::default(),
     ));
 
-    tokio::spawn(tx_rx_task(&interface, tx, rx).expect("spawn TX/RX task"));
+    match tx_rx_task(&interface, tx, rx) {
+	Ok(task) => tokio::spawn(task),
+	Err(err) => {
+	    println!("{err}");
+	    std::process::exit(1);
+	}
+    };
 
-    let group = maindevice
+    let Ok(group) = maindevice
         .init_single_group::<MAX_SUBDEVICES, PDI_LEN>(ethercat_now)
         .await
-        .expect("Init");
-
-    log::info!("Discovered {} SubDevices", group.len());
-
-    for subdevice in group.iter(&maindevice) {
-        if subdevice.name() == "EL3004" {
-            log::info!("Found EL3004. Configuring...");
-
-            subdevice.sdo_write(0x1c12, 0, 0u8).await?;
-
-            subdevice
-                .sdo_write_array(0x1c13, &[0x1a00u16, 0x1a02, 0x1a04, 0x1a06])
-                .await?;
-
-            // The `sdo_write_array` call above is equivalent to the following
-            // subdevice.sdo_write(0x1c13, 0, 0u8).await?;
-            // subdevice.sdo_write(0x1c13, 1, 0x1a00u16).await?;
-            // subdevice.sdo_write(0x1c13, 2, 0x1a02u16).await?;
-            // subdevice.sdo_write(0x1c13, 3, 0x1a04u16).await?;
-            // subdevice.sdo_write(0x1c13, 4, 0x1a06u16).await?;
-            // subdevice.sdo_write(0x1c13, 0, 4u8).await?;
-        }
-    }
+    else {
+        println!("failed to init; EtherCAT bus could be on a different interface, disconnected, or timing out");
+        std::process::exit(1);
+    };
 
     let group = group.into_op(&maindevice).await.expect("PRE-OP -> OP");
 
     for subdevice in group.iter(&maindevice) {
         let io = subdevice.io_raw();
 
-        log::info!(
-            "-> SubDevice {:#06x} {} inputs: {} bytes, outputs: {} bytes",
+        println!(
+            "{:#06x} {} inputs: {} B, outputs: {} B",
             subdevice.configured_address(),
             subdevice.name(),
             io.inputs().len(),
@@ -109,52 +84,17 @@ async fn main() -> Result<(), Error> {
         );
     }
 
-    let mut tick_interval = tokio::time::interval(Duration::from_millis(5));
-    tick_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
-
-    let shutdown = Arc::new(AtomicBool::new(false));
-    signal_hook::flag::register(signal_hook::consts::SIGINT, Arc::clone(&shutdown))
-        .expect("Register hook");
-
-    loop {
-        // Graceful shutdown on Ctrl + C
-        if shutdown.load(Ordering::Relaxed) {
-            log::info!("Shutting down...");
-
-            break;
-        }
-
-        group.tx_rx(&maindevice).await.expect("TX/RX");
-
-        // Increment every output byte for every SubDevice by one
-        for subdevice in group.iter(&maindevice) {
-            let mut o = subdevice.outputs_raw_mut();
-
-            for byte in o.iter_mut() {
-                *byte = byte.wrapping_add(1);
-            }
-        }
-
-        tick_interval.tick().await;
-    }
-
     let group = group
         .into_safe_op(&maindevice)
         .await
         .expect("OP -> SAFE-OP");
-
-    log::info!("OP -> SAFE-OP");
 
     let group = group
         .into_pre_op(&maindevice)
         .await
         .expect("SAFE-OP -> PRE-OP");
 
-    log::info!("SAFE-OP -> PRE-OP");
-
     let _group = group.into_init(&maindevice).await.expect("PRE-OP -> INIT");
-
-    log::info!("PRE-OP -> INIT, shutdown complete");
 
     Ok(())
 }
