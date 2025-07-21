@@ -1,4 +1,7 @@
-use super::{CoeService, InitSdoHeader, SdoInfoHeader, SdoInfoOpCode, SegmentSdoHeader, SubIndex};
+use super::{
+    sdo_info::ObjectDescriptionListQuery, CoeService, InitSdoHeader, SdoInfoHeader, SdoInfoOpCode,
+    SegmentSdoHeader, SubIndex,
+};
 use crate::mailbox::{MailboxHeader, MailboxType, Priority};
 use core::fmt::Display;
 
@@ -81,6 +84,9 @@ impl Display for SdoSegmented {
     }
 }
 
+/// Marker trait for SDO Information requests.
+pub(crate) trait SdoInfoRequest: ethercrab_wire::EtherCrabWireWriteSized {}
+
 /// Defined in ETG.1000.6 §5.6.3.3.1
 #[derive(Debug, Copy, Clone, PartialEq, ethercrab_wire::EtherCrabWireReadWrite)]
 #[wire(bytes = 14)]
@@ -92,6 +98,8 @@ pub struct ObjectDescriptionListRequest {
     #[wire(bytes = 2)]
     pub list_type: ObjectDescriptionListQueryInner,
 }
+
+impl SdoInfoRequest for ObjectDescriptionListRequest {}
 
 /// Defined in ETG.1000.6 §5.6.3.3.2
 #[derive(Debug, Copy, Clone, PartialEq, ethercrab_wire::EtherCrabWireReadWrite)]
@@ -109,30 +117,6 @@ pub struct ObjectDescriptionListResponse {
 pub enum ObjectDescriptionListQueryInner {
     /// Get number of objects in the 5 different lists.
     ObjectQuantities = 0x00,
-    /// All objects of the object dictionary.
-    All = 0x01,
-    /// Objects which are mappable in an RxPDO.
-    RxPdoMappable = 0x02,
-    /// Objects which are mappable in a TxPDO.
-    TxPdoMappable = 0x03,
-    /// Objects which have to be stored for a device replacement.
-    StoredForDeviceReplacement = 0x04,
-    /// Objects which can be used as startup parameter.
-    StartupParameters = 0x05,
-}
-
-/// The subset of indices of the object dictionary which
-/// [`crate::SubDeviceRef::sdo_info_object_description_list`] makes a request for.
-///
-/// Defined in ETG.1000.6 §5.6.3.3.1.
-///
-/// Note that object quantities (value 0 in the standard) can be queried with
-/// [`crate::SubDeviceRef::sdo_info_object_quantities`].
-#[derive(Debug, Copy, Clone, ethercrab_wire::EtherCrabWireReadWrite)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
-#[repr(u8)]
-pub enum ObjectDescriptionListQuery {
-    // ObjectQuantities is invoked through a different API
     /// All objects of the object dictionary.
     All = 0x01,
     /// Objects which are mappable in an RxPDO.
@@ -165,28 +149,6 @@ impl From<ObjectDescriptionListQuery> for ObjectDescriptionListQueryInner {
     }
 }
 
-/// How many CoE objects on a subdevice are of each [`ObjectDescriptionListQuery`].
-#[derive(Debug, Copy, Clone, PartialEq, ethercrab_wire::EtherCrabWireRead)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
-#[wire(bytes = 10)]
-pub struct ObjectDescriptionListQueryCounts {
-    /// How many are of type [`ObjectDescriptionListQuery::All`].
-    #[wire(bytes = 2)]
-    pub all: u16,
-    /// How many are of type [`ObjectDescriptionListQuery::RxPdoMappable`].
-    #[wire(bytes = 2)]
-    pub rx_pdo_mappable: u16,
-    /// How many are of type [`ObjectDescriptionListQuery::TxPdoMappable`].
-    #[wire(bytes = 2)]
-    pub tx_pdo_mappable: u16,
-    /// How many are of type [`ObjectDescriptionListQuery::StoredForDeviceReplacement`].
-    #[wire(bytes = 2)]
-    pub stored_for_device_replacement: u16,
-    /// How many are of type [`ObjectDescriptionListQuery::StartupParameters`].
-    #[wire(bytes = 2)]
-    pub startup_parameters: u16,
-}
-
 impl core::fmt::Display for ObjectDescriptionListQuery {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write!(
@@ -203,6 +165,23 @@ impl core::fmt::Display for ObjectDescriptionListQuery {
         )
     }
 }
+
+/// Defined in ETG.1000.6 §5.6.3.5.1
+#[derive(Debug, Copy, Clone, PartialEq, ethercrab_wire::EtherCrabWireReadWrite)]
+#[wire(bytes = 14)]
+pub struct ObjectDescriptionRequest {
+    #[wire(bytes = 8)]
+    pub mailbox: MailboxHeader,
+    #[wire(bytes = 4)]
+    pub sdo_info_header: SdoInfoHeader,
+    #[wire(bytes = 2)]
+    pub index: u16,
+}
+
+impl SdoInfoRequest for ObjectDescriptionRequest {}
+
+/// Defined in ETG.1000.6 §5.6.3.5.2
+pub type ObjectDescriptionResponse = ObjectDescriptionRequest;
 
 /// Must be implemented for any type used to send a CoE SDO Request or Response service.
 pub trait CoeServiceRequest:
@@ -323,6 +302,25 @@ pub fn get_object_description_list(
             fragments_left: 0,
         },
         list_type: list_type.into(),
+    }
+}
+
+pub fn get_object_description(counter: u8, index: u16) -> ObjectDescriptionRequest {
+    ObjectDescriptionRequest {
+        mailbox: MailboxHeader {
+            length: 0x08,
+            // address: 0x0000,
+            priority: Priority::Lowest,
+            mailbox_type: MailboxType::Coe,
+            counter,
+            service: CoeService::SdoInformation,
+        },
+        sdo_info_header: SdoInfoHeader {
+            op_code: SdoInfoOpCode::GetObjectDescriptionRequest,
+            incomplete: false,
+            fragments_left: 0,
+        },
+        index,
     }
 }
 

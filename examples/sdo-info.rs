@@ -1,4 +1,10 @@
-//! Print SDO Info about the CoE object dictionaries of every device on the bus.
+//! Print SDO Info as YAML about the devices on the network.
+//!
+//! Without options, this will state the counts of objects for each device
+//! and list the index of all available objects for each device.
+//!
+//! With arguments `device (all|<number>)`, this will give detailed
+//! information about each object on either all or a specific device.
 //!
 //! Run with e.g.
 //!
@@ -13,13 +19,17 @@
 //! Windows
 //!
 //! ```ps
-//! $env:RUST_LOG="debug" ; cargo run --example ek1100 --release -- '\Device\NPF_{FF0ACEE6-E8CD-48D5-A399-619CD2340465}'
+//! $env:RUST_LOG="debug" ; cargo run --example sdo-info --release -- '\Device\NPF_{FF0ACEE6-E8CD-48D5-A399-619CD2340465}'
 //! ```
+
+use std::str::FromStr;
 
 use env_logger::Env;
 use ethercrab::{
-    MainDevice, MainDeviceConfig, ObjectDescriptionListQuery, ObjectDescriptionListQueryCounts,
-    PduStorage, Timeouts, error::Error, std::ethercat_now,
+    error::Error,
+    sdo_info::{ObjectDescription, ObjectDescriptionListQuery, ObjectDescriptionListQueryCounts},
+    std::ethercat_now,
+    MainDevice, MainDeviceConfig, PduStorage, SubDevice, SubDeviceRef, Timeouts,
 };
 use std::{sync::Arc, time::Duration};
 
@@ -41,6 +51,21 @@ async fn main() -> Result<(), Error> {
     let interface = std::env::args()
         .nth(1)
         .expect("Provide network interface as first argument.");
+
+    let device_selection = if let Some(command) = std::env::args().nth(2)
+        && command == "device"
+    {
+        Some(
+            DeviceSelection::from_str(
+                &std::env::args()
+                    .nth(3)
+                    .expect("`all` or a device index number"),
+            )
+            .expect("`all` or a device index number"),
+        )
+    } else {
+        None
+    };
 
     let (tx, rx, pdu_loop) = PDU_STORAGE.try_split().expect("can only split once");
 
@@ -72,42 +97,92 @@ async fn main() -> Result<(), Error> {
         .await
         .expect("Init");
 
-    for subdevice in group.iter(&maindevice) {
-        println!("{}:", subdevice.name());
-        let object_quantities = subdevice.sdo_info_object_quantities().await?.unwrap_or(
-            ObjectDescriptionListQueryCounts {
-                all: 0,
-                rx_pdo_mappable: 0,
-                tx_pdo_mappable: 0,
-                stored_for_device_replacement: 0,
-                startup_parameters: 0,
-            },
-        );
-        println!(
-            r#"  object-quantities:
-    all: {}
-    rx-pdo-mappable: {}
-    tx-pdo-mappable: {}
-    stored-for-device-replacement: {}
-    startup-parameters: {}"#,
-            object_quantities.all,
-            object_quantities.rx_pdo_mappable,
-            object_quantities.tx_pdo_mappable,
-            object_quantities.stored_for_device_replacement,
-            object_quantities.startup_parameters,
-        );
-
-        let addresses = subdevice
-            .sdo_info_object_description_list(ObjectDescriptionListQuery::All)
-            .await?
-            .unwrap_or_default();
-        println!("  addresses: {}", address_list(addresses));
+    for (i, subdevice) in group.iter(&maindevice).enumerate() {
+        if let Some(device_selection) = device_selection {
+            match device_selection {
+                DeviceSelection::All => print_device_object_information(subdevice).await?,
+                DeviceSelection::Index(idx) if idx == i => {
+                    print_device_object_information(subdevice).await?;
+                    break;
+                }
+                _ => continue,
+            }
+        } else {
+            print_quantities_and_addresses(subdevice).await?;
+        }
     }
 
     let _group = group.into_init(&maindevice).await.expect("PRE-OP -> INIT");
 
     log::info!("PRE-OP -> INIT, shutdown complete");
 
+    Ok(())
+}
+
+async fn print_quantities_and_addresses(
+    subdevice: SubDeviceRef<'_, &SubDevice>,
+) -> Result<(), Error> {
+    println!("{}:", subdevice.name());
+    let object_quantities =
+        subdevice
+            .sdo_info_object_quantities()
+            .await?
+            .unwrap_or(ObjectDescriptionListQueryCounts {
+                all: 0,
+                rx_pdo_mappable: 0,
+                tx_pdo_mappable: 0,
+                stored_for_device_replacement: 0,
+                startup_parameters: 0,
+            });
+    println!(
+        r#"  object-quantities:
+    all: {}
+    rx-pdo-mappable: {}
+    tx-pdo-mappable: {}
+    stored-for-device-replacement: {}
+    startup-parameters: {}"#,
+        object_quantities.all,
+        object_quantities.rx_pdo_mappable,
+        object_quantities.tx_pdo_mappable,
+        object_quantities.stored_for_device_replacement,
+        object_quantities.startup_parameters,
+    );
+
+    let addresses = subdevice
+        .sdo_info_object_description_list(ObjectDescriptionListQuery::All)
+        .await?
+        .unwrap_or_default();
+    println!("  addresses: {}", address_list(addresses));
+    Ok(())
+}
+
+async fn print_device_object_information(
+    subdevice: SubDeviceRef<'_, &SubDevice>,
+) -> Result<(), Error> {
+    println!("{}:", subdevice.name());
+    let addresses = subdevice
+        .sdo_info_object_description_list(ObjectDescriptionListQuery::All)
+        .await?
+        .unwrap_or_default();
+    for address in addresses {
+        println!("    {}:", address);
+        let Some(ObjectDescription {
+            data_type,
+            max_sub_index,
+            object_code,
+            name,
+        }) = subdevice.sdo_info_object_description(address).await?
+        else {
+            continue;
+        };
+        println!(
+            "        data-type: {}
+        max-sub-index: {}
+        object-code: {}
+        name: {}",
+            data_type, max_sub_index, object_code, name
+        );
+    }
     Ok(())
 }
 
@@ -125,4 +200,19 @@ fn address_list(addresses: heapless::Vec<u16, 0x1_0000>) -> heapless::String<0x8
     out.push_str(&format!("{:#06x}]", addresses.last().unwrap()))
         .expect("longer buffer");
     out
+}
+#[derive(Copy, Clone)]
+enum DeviceSelection {
+    All,
+    Index(usize),
+}
+
+impl FromStr for DeviceSelection {
+    type Err = ();
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        if s == "all" {
+            return Ok(Self::All);
+        }
+        Ok(Self::Index(usize::from_str(s).map_err(|_| ())?))
+    }
 }

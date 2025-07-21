@@ -186,7 +186,7 @@ mod vendors;
 pub mod std;
 
 pub use al_status_code::AlStatusCode;
-pub use coe::SubIndex;
+pub use coe::{sdo_info, SubIndex};
 pub use command::{Command, Reads, WrappedRead, WrappedWrite, Writes};
 pub use ethercrab_wire::{
     EtherCrabWireRead, EtherCrabWireReadSized, EtherCrabWireReadWrite, EtherCrabWireSized,
@@ -197,10 +197,7 @@ pub use maindevice::MainDevice;
 pub use maindevice_config::{MainDeviceConfig, RetryBehaviour};
 pub use pdu_loop::{PduLoop, PduRx, PduStorage, PduTx, ReceiveAction, SendableFrame};
 pub use register::{DcSupport, RegisterAddress};
-pub use subdevice::{
-    DcSync, ObjectDescriptionListQuery, ObjectDescriptionListQueryCounts, SubDevice,
-    SubDeviceIdentity, SubDevicePdi, SubDeviceRef,
-};
+pub use subdevice::{DcSync, SubDevice, SubDeviceIdentity, SubDevicePdi, SubDeviceRef};
 pub use subdevice_group::{GroupId, SubDeviceGroup, SubDeviceGroupHandle, TxRxResponse};
 pub use subdevice_state::SubDeviceState;
 pub use timer_factory::Timeouts;

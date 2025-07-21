@@ -1,9 +1,8 @@
 use ethercrab_wire::EtherCrabWireReadSized;
 
 pub mod abort_code;
+pub mod sdo_info;
 pub mod services;
-
-pub use services::{ObjectDescriptionListQuery, ObjectDescriptionListQueryCounts};
 
 /// Defined in ETG1000.6 Table 29 – CoE elements
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ethercrab_wire::EtherCrabWireReadWrite)]
