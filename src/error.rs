@@ -33,6 +33,8 @@ pub enum Error {
     },
     /// A mailbox error was encountered.
     Mailbox(MailboxError),
+    /// An SDO Information request failed.
+    SdoInfo(CoeAbortCode),
     /// Failed to send a frame over the network interace.
     SendFrame,
     /// Failed to receive a frame properly.
@@ -119,6 +121,7 @@ impl core::fmt::Display for Error {
                 string_length, max_length
             ),
             Error::Mailbox(e) => write!(f, "mailbox: {e}"),
+            Error::SdoInfo(abort_code) => write!(f, "SDO Info: {abort_code}"),
             Error::SendFrame => f.write_str("failed to send EtherCAT frame"),
             Error::ReceiveFrame => f.write_str("failed to receive an EtherCAT frame"),
             Error::PartialSend { len, sent } => {

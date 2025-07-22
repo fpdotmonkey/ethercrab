@@ -1,5 +1,7 @@
 //! User-facing data types relevant to SDO Information communications
 
+use ethercrab_wire::EtherCrabWireSized;
+
 /// The subset of indices of the object dictionary which
 /// [`crate::SubDeviceRef::sdo_info_object_description_list`] makes a request for.
 ///
@@ -50,22 +52,39 @@ pub struct ObjectDescriptionListQueryCounts {
 }
 
 /// Defined in ETG.1000.6 §5.6.3.5.2 Table 46.
-#[derive(Debug, Clone, PartialEq, ethercrab_wire::EtherCrabWireRead)]
+#[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
-#[wire(bytes = 68)]
 pub struct ObjectDescription {
     /// The type of the object
-    #[wire(bytes = 2)]
     pub data_type: DataType,
     /// The number of subindices the object has minus one.
-    #[wire(bytes = 1)]
     pub max_sub_index: u8,
     /// A secondary type for the object
-    #[wire(bytes = 1)]
     pub object_code: ObjectCode,
     /// The human-readable name of the object
-    #[wire(bytes = 64)]
     pub name: heapless::String<64>,
+}
+
+impl ethercrab_wire::EtherCrabWireRead for ObjectDescription {
+    fn unpack_from_slice(buf: &[u8]) -> Result<Self, ethercrab_wire::WireError> {
+        if buf.len() < DataType::PACKED_LEN + u8::PACKED_LEN + ObjectCode::PACKED_LEN + 1 {
+            return Err(ethercrab_wire::WireError::ReadBufferTooShort);
+        }
+        let mut start_idx = 0;
+        let data_type = DataType::unpack_from_slice(&buf[start_idx..])?;
+        start_idx += DataType::PACKED_LEN;
+        let max_sub_index = u8::unpack_from_slice(&buf[start_idx..])?;
+        start_idx += u8::PACKED_LEN;
+        let object_code = ObjectCode::unpack_from_slice(&buf[start_idx..])?;
+        start_idx += ObjectCode::PACKED_LEN;
+        let name = heapless::String::<64>::unpack_from_slice(&buf[start_idx..])?;
+        Ok(ObjectDescription {
+            data_type,
+            max_sub_index,
+            object_code,
+            name,
+        })
+    }
 }
 
 /// The object code shall denote what kind of object is at that
@@ -256,6 +275,16 @@ pub enum DataType {
     Other(u16),
 }
 
+/// The data type number received and the category it falls in.
+///
+/// For data types not specified by [`DataType`].
+#[derive(Debug, Copy, Clone, PartialEq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct GenericDataType {
+    value: u16,
+    kind: GenericDataTypeKind,
+}
+
 /// Data types not specified by [`DataType`].
 #[derive(Debug, Copy, Clone, PartialEq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
@@ -302,28 +331,28 @@ pub enum GenericDataTypeKind {
     Unknown,
 }
 
-impl GenericDataTypeKind {
+impl GenericDataType {
     /// What kind of data is held by an object of type [`DataType::Other`]?
-    pub fn from_u16(v: u16) -> GenericDataTypeKind {
-        match v {
+    pub fn from_u16(value: u16) -> Self {
+        let kind = match value {
             // from ETG.1000.6 §5.6.7.3 Table 65
-            0x0040..0x0060 => Self::ManufacturerComplex,
-            0x0060..0x0080 => Self::DeviceProfile0Standard,
-            0x0080..0x00a0 => Self::DeviceProfile0Complex,
-            0x00a0..0x00c0 => Self::DeviceProfile1Standard,
-            0x00c0..0x00e0 => Self::DeviceProfile1Complex,
-            0x00e0..0x0100 => Self::DeviceProfile2Standard,
-            0x0100..0x0120 => Self::DeviceProfile2Complex,
-            0x0120..0x0140 => Self::DeviceProfile3Standard,
-            0x0140..0x0160 => Self::DeviceProfile3Complex,
-            0x0160..0x0180 => Self::DeviceProfile4Standard,
-            0x0180..0x01a0 => Self::DeviceProfile4Complex,
-            0x01a0..0x01c0 => Self::DeviceProfile5Standard,
-            0x01c0..0x01e0 => Self::DeviceProfile5Complex,
-            0x01e0..0x0200 => Self::DeviceProfile6Standard,
-            0x0200..0x0220 => Self::DeviceProfile6Complex,
-            0x0220..0x0240 => Self::DeviceProfile7Standard,
-            0x0240..0x0260 => Self::DeviceProfile7Complex,
+            0x0040..0x0060 => GenericDataTypeKind::ManufacturerComplex,
+            0x0060..0x0080 => GenericDataTypeKind::DeviceProfile0Standard,
+            0x0080..0x00a0 => GenericDataTypeKind::DeviceProfile0Complex,
+            0x00a0..0x00c0 => GenericDataTypeKind::DeviceProfile1Standard,
+            0x00c0..0x00e0 => GenericDataTypeKind::DeviceProfile1Complex,
+            0x00e0..0x0100 => GenericDataTypeKind::DeviceProfile2Standard,
+            0x0100..0x0120 => GenericDataTypeKind::DeviceProfile2Complex,
+            0x0120..0x0140 => GenericDataTypeKind::DeviceProfile3Standard,
+            0x0140..0x0160 => GenericDataTypeKind::DeviceProfile3Complex,
+            0x0160..0x0180 => GenericDataTypeKind::DeviceProfile4Standard,
+            0x0180..0x01a0 => GenericDataTypeKind::DeviceProfile4Complex,
+            0x01a0..0x01c0 => GenericDataTypeKind::DeviceProfile5Standard,
+            0x01c0..0x01e0 => GenericDataTypeKind::DeviceProfile5Complex,
+            0x01e0..0x0200 => GenericDataTypeKind::DeviceProfile6Standard,
+            0x0200..0x0220 => GenericDataTypeKind::DeviceProfile6Complex,
+            0x0220..0x0240 => GenericDataTypeKind::DeviceProfile7Standard,
+            0x0240..0x0260 => GenericDataTypeKind::DeviceProfile7Complex,
             // I take reserved to mean those indices specified as such in
             // ETG.1000.6 §5.6.7.3 less the addresses which get used in
             // ETG.1020 §26.
@@ -334,9 +363,10 @@ impl GenericDataTypeKind {
             | 0x0024
             | 0x0026
             | 0x026b..=0x0280
-            | 0x0287..=0x07ff => Self::Reserved,
-            _ => Self::Unknown,
-        }
+            | 0x0287..=0x07ff => GenericDataTypeKind::Reserved,
+            _ => GenericDataTypeKind::Unknown,
+        };
+        Self { value, kind }
     }
 }
 
@@ -431,9 +461,15 @@ impl std::fmt::Display for DataType {
                 Self::DeftypeFsoeFrame => "DEFTYPE_FSOEFRAME".into(),
                 Self::DefTypeFsoeCommPar => "DEFTYPE_FSOECOMMPAR".into(),
 
-                Self::Other(other) => GenericDataTypeKind::from_u16(*other).to_string(),
+                Self::Other(other) => GenericDataType::from_u16(*other).to_string(),
             }
         )
+    }
+}
+
+impl std::fmt::Display for GenericDataType {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "{} ({})", self.kind, self.value)
     }
 }
 

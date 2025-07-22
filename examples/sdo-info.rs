@@ -165,21 +165,31 @@ async fn print_device_object_information(
         .await?
         .unwrap_or_default();
     for address in addresses {
-        println!("    {}:", address);
-        let Some(ObjectDescription {
+        println!("    {:#06x}:", address);
+        let ObjectDescription {
             data_type,
             max_sub_index,
             object_code,
             name,
-        }) = subdevice.sdo_info_object_description(address).await?
-        else {
-            continue;
+        } = match subdevice.sdo_info_object_description(address).await {
+            Ok(Some(object_description)) => object_description,
+            Ok(None) => continue,
+            Err(err) => {
+                log::error!(
+                    "SDO Info Get Object Description device {:#06x} index {:#06x}: {}",
+                    subdevice.configured_address(),
+                    address,
+                    err
+                );
+                println!("        error: \"{}\"", err);
+                continue;
+            }
         };
         println!(
-            "        data-type: {}
+            r#"        data-type: "{}"
         max-sub-index: {}
-        object-code: {}
-        name: {}",
+        object-code: "{}"
+        name: "{}""#,
             data_type, max_sub_index, object_code, name
         );
     }

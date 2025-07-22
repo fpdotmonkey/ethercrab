@@ -790,9 +790,9 @@ where
     ///
     /// Per ETG.1000.5 §6.1.4.1.3.4, this means sending one request and then awaiting many
     /// responses.
-    async fn send_sdo_info_service(
+    async fn send_sdo_info_service<Request: coe::services::SdoInfoRequest>(
         &self,
-        request: impl coe::services::SdoInfoRequest,
+        request: Request,
     ) -> Result<Option<heapless::Vec<u8, { u16::MAX as usize * 2 }>>, Error> {
         let (read_mailbox, write_mailbox) = match self.coe_mailboxes().await {
             Ok((read, write)) => Ok((read, write)),
@@ -808,36 +808,40 @@ where
             .send(self.maindevice, &request.pack().as_ref())
             .await?;
 
-        const COE_HEADER_AND_LIST_TYPE_SIZE: usize = 8;
-
-        let mut consumed_list_type = false;
+        let mut first_loop = true;
         // The biggest SDO Info request is listing all the available objects,
         // which is u16::MAX * 2 = 0x1fffe bytes big (ETG.1000.6 §5.6.3.3,
         // CiA 301 §7.4.1).
         let mut buf = heapless::Vec::<u8, 0x1fffe>::new();
         loop {
             let mut response = self.coe_response(&read_mailbox).await?;
-            let headers =
-                <coe::services::ObjectDescriptionListResponse>::unpack_from_slice(&response)?;
-            if headers.sdo_info_header.op_code
-                == coe::SdoInfoOpCode::GetObjectDescriptionListResponse
-            {
-                let length = headers.mailbox.length as usize - COE_HEADER_AND_LIST_TYPE_SIZE;
-                fmt::trace!(
-                    "CoE Info, {} fragments left",
-                    headers.sdo_info_header.fragments_left
-                );
-                response.trim_front(coe::services::ObjectDescriptionListResponse::PACKED_LEN);
-                if !consumed_list_type {
-                    response.trim_front(2); // skip over the list type
-                    consumed_list_type = true;
-                }
-                buf.extend_from_slice(&response[..length])
-                    .map_err(|_| Error::Internal)?;
-                if !headers.sdo_info_header.incomplete {
-                    break;
-                }
+            let headers = <coe::services::SdoInfoResponse>::unpack_from_slice(&response)?;
+            fmt::trace!(
+                "CoE Info, {} fragments left",
+                headers.sdo_info_header().fragments_left
+            );
+            if headers.sdo_info_header().op_code == coe::SdoInfoOpCode::SdoInfoErrorRequest {
+                let error = coe::services::SdoInfoErrorRequest::unpack_from_slice(&response)
+                    .map_err(|err| {
+                        log::error!("malformed SDO Info Error Request: {}", err);
+                        Error::Pdu(PduError::Decode)
+                    })?;
+                return Err(Error::SdoInfo(error.abort_code));
             }
+            response.trim_front(Request::PACKED_LEN);
+            if first_loop
+                && headers.sdo_info_header().op_code
+                    == coe::SdoInfoOpCode::GetObjectDescriptionListResponse
+            {
+                response.trim_front(2); // skip over the list type
+            }
+            buf.extend_from_slice(&response[..headers.length()])
+                .inspect_err(|()| log::error!("send_sdo_info_service: buffer error"))
+                .map_err(|_| Error::Internal)?;
+            if !headers.sdo_info_header().incomplete {
+                break;
+            }
+            first_loop = false;
         }
         Ok(Some(buf))
     }

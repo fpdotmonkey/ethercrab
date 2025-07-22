@@ -1,9 +1,12 @@
+use core::fmt::Display;
+
+use ethercrab_wire::EtherCrabWireSized;
+
 use super::{
     sdo_info::ObjectDescriptionListQuery, CoeService, InitSdoHeader, SdoInfoHeader, SdoInfoOpCode,
     SegmentSdoHeader, SubIndex,
 };
 use crate::mailbox::{MailboxHeader, MailboxType, Priority};
-use core::fmt::Display;
 
 /// An expedited (data contained within SDO as opposed to sent in subsequent packets) SDO download
 /// request.
@@ -85,7 +88,10 @@ impl Display for SdoSegmented {
 }
 
 /// Marker trait for SDO Information requests.
-pub(crate) trait SdoInfoRequest: ethercrab_wire::EtherCrabWireWriteSized {}
+pub(crate) trait SdoInfoRequest:
+    ethercrab_wire::EtherCrabWireRead + ethercrab_wire::EtherCrabWireWriteSized
+{
+}
 
 /// Defined in ETG.1000.6 §5.6.3.3.1
 #[derive(Debug, Copy, Clone, PartialEq, ethercrab_wire::EtherCrabWireReadWrite)]
@@ -104,11 +110,20 @@ impl SdoInfoRequest for ObjectDescriptionListRequest {}
 /// Defined in ETG.1000.6 §5.6.3.3.2
 #[derive(Debug, Copy, Clone, PartialEq, ethercrab_wire::EtherCrabWireReadWrite)]
 #[wire(bytes = 12)]
-pub struct ObjectDescriptionListResponse {
+pub struct SdoInfoResponse {
     #[wire(bytes = 8)]
     pub mailbox: MailboxHeader,
     #[wire(bytes = 4)]
     pub sdo_info_header: SdoInfoHeader,
+}
+
+impl SdoInfoResponse {
+    pub fn sdo_info_header(&self) -> SdoInfoHeader {
+        self.sdo_info_header
+    }
+    pub fn length(&self) -> usize {
+        self.mailbox.length as usize - MailboxHeader::PACKED_LEN
+    }
 }
 
 /// [`ObjectDescriptionListQuery`], but with `ObjectQuantities`.
@@ -180,8 +195,17 @@ pub struct ObjectDescriptionRequest {
 
 impl SdoInfoRequest for ObjectDescriptionRequest {}
 
-/// Defined in ETG.1000.6 §5.6.3.5.2
-pub type ObjectDescriptionResponse = ObjectDescriptionRequest;
+/// Defined in ETG.1000.6 §5.6.3.8 Table 49
+#[derive(Debug, Copy, Clone, PartialEq, ethercrab_wire::EtherCrabWireRead)]
+#[wire(bytes = 16)]
+pub struct SdoInfoErrorRequest {
+    #[wire(bytes = 8)]
+    pub mailbox: MailboxHeader,
+    #[wire(bytes = 4)]
+    pub sdo_info_header: SdoInfoHeader,
+    #[wire(bytes = 4)]
+    pub abort_code: super::abort_code::CoeAbortCode,
+}
 
 /// Must be implemented for any type used to send a CoE SDO Request or Response service.
 pub trait CoeServiceRequest:
@@ -550,8 +574,8 @@ mod tests {
             0x1a, 0x1e, 0x1a, 0x1f, 0x1a, 0x20, 0x1a, 0x21, 0x1a, 0x22, 0x1a, 0x23, 0x1a, 0x24,
             0x1a, 0x25, 0x1a, 0x26, 0x1a, 0x30, 0x1a, 0x31, 0x1a,
         ];
-        let parsed = ObjectDescriptionListResponse::unpack_from_slice(&raw);
-        let expected = ObjectDescriptionListResponse {
+        let parsed = SdoInfoResponse::unpack_from_slice(&raw);
+        let expected = SdoInfoResponse {
             mailbox: MailboxHeader {
                 length: 122,
                 priority: Priority::Lowest,
@@ -567,14 +591,13 @@ mod tests {
         };
         pretty_assertions::assert_eq!(parsed, Ok(expected));
         let list_type = <ObjectDescriptionListQueryInner>::unpack_from_slice(
-            &raw[ObjectDescriptionListResponse::PACKED_LEN
-                ..ObjectDescriptionListResponse::PACKED_LEN + 2],
+            &raw[SdoInfoResponse::PACKED_LEN..SdoInfoResponse::PACKED_LEN + 2],
         );
         pretty_assertions::assert_eq!(list_type, Ok(ObjectDescriptionListQueryInner::All));
-        let mut buf = [0u8; ObjectDescriptionListResponse::PACKED_LEN];
+        let mut buf = [0u8; SdoInfoResponse::PACKED_LEN];
         pretty_assertions::assert_eq!(
             expected.pack_to_slice(&mut buf),
-            Ok(&raw[..ObjectDescriptionListResponse::PACKED_LEN])
+            Ok(&raw[..SdoInfoResponse::PACKED_LEN])
         );
         // length is actually 57
         let expected: [u16; (RAW_LEN - ObjectDescriptionListRequest::PACKED_LEN) / 2] = [
